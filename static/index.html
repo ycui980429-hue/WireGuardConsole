@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WireGuard 控制台</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0e1116;
+    --card: #141922;
+    --raise: #1a212b;
+    --border: #232b36;
+    --border-strong: #313b48;
+    --text: #e7edf4;
+    --muted: #97a3b0;
+    --faint: #7e8b9a;
+    --accent: #e2582f;
+    --accent-press: #c2410c;
+    --accent-hover: #ca450d;
+    --accent-soft: rgba(226, 88, 47, .12);
+    --ok: #4ac26b;
+    --ok-soft: rgba(74, 194, 107, .1);
+    --ok-border: rgba(74, 194, 107, .32);
+    --err: #f47067;
+    --err-strong: #e5534b;
+    --err-soft: rgba(229, 83, 75, .12);
+    --warn: #d9a53f;
+    --warn-soft: rgba(217, 165, 63, .08);
+    --warn-border: rgba(217, 165, 63, .35);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+    --shadow-1: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+    --shadow-2: 0 24px 70px rgba(0,0,0,.55), 0 4px 16px rgba(0,0,0,.4);
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    font: 13.5px/1.6 var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: rgba(226, 88, 47, .4); color: #fff; }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-thumb { background: #2b3440; border-radius: 8px; border: 3px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: #3a4653; }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+  svg { flex: none; }
+
+  /* ── 顶栏 ─────────────────────────────── */
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(14, 17, 22, .82);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-inner {
+    max-width: 920px; margin: 0 auto; padding: 12px 24px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+  .brand-mark { color: var(--accent); display: grid; place-items: center; }
+  .brand-text h1 { font-size: 15px; font-weight: 650; letter-spacing: .01em; white-space: nowrap; }
+  .brand-sub { font-size: 11.5px; color: var(--faint); font-family: var(--mono); white-space: nowrap; }
+  .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  .summary { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .summary b { color: var(--ok); font-weight: 600; }
+
+  .wrap { max-width: 920px; margin: 0 auto; padding: 24px 24px 96px; }
+
+  /* ── 按钮 ─────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    height: 34px; padding: 0 14px;
+    border: 1px solid var(--border-strong); border-radius: 9px;
+    background: var(--raise); color: var(--text);
+    font: 500 13px/1 var(--sans);
+    cursor: pointer; user-select: none;
+    transition: background .15s, border-color .15s, color .15s, opacity .15s;
+  }
+  .btn:hover { background: #212a35; border-color: #3d4956; }
+  .btn:active { transform: translateY(0.5px); }
+  .btn:disabled { opacity: .42; cursor: not-allowed; transform: none; }
+  .btn.primary {
+    background: var(--accent-press); border-color: transparent; color: #fff; font-weight: 600;
+  }
+  .btn.primary:hover { background: var(--accent-hover); }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  .btn.ghost:hover { background: var(--raise); border-color: transparent; color: var(--text); }
+  .btn.danger { background: transparent; border-color: transparent; color: var(--muted); }
+  .btn.danger:hover { background: var(--err-soft); color: var(--err); }
+  .btn.danger-solid { background: #c73a32; border-color: transparent; color: #fff; font-weight: 600; }
+  .btn.danger-solid:hover { background: #b23330; }
+  .btn.sm { height: 30px; padding: 0 11px; font-size: 12.5px; border-radius: 8px; }
+  .btn.icon { width: 32px; height: 32px; padding: 0; border-radius: 8px; color: var(--muted); }
+  .btn.icon:hover { color: var(--text); }
+
+  .spin {
+    display: inline-block; width: 13px; height: 13px; flex: none;
+    border: 2px solid currentColor; border-right-color: transparent;
+    border-radius: 50%; animation: rot .7s linear infinite;
+  }
+  @keyframes rot { to { transform: rotate(360deg); } }
+
+  /* ── sudo 授权提示 ────────────────────── */
+  .banner {
+    display: none;
+    background: var(--warn-soft);
+    border: 1px solid var(--warn-border);
+    border-radius: 12px;
+    padding: 14px 16px; margin-bottom: 20px;
+    font-size: 13px; color: #e5c47e;
+  }
+  .banner .banner-title { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--warn); margin-bottom: 4px; }
+  .banner code {
+    display: block; margin-top: 10px; padding: 10px 12px;
+    background: #0a0d11; border: 1px solid var(--border);
+    border-radius: 8px; font: 12px/1.55 var(--mono); color: #cdd9e5;
+    word-break: break-all; user-select: all;
+  }
+  .banner .btn { margin-top: 10px; height: 28px; font-size: 12px; padding: 0 10px; }
+
+  /* ── 工具栏 ───────────────────────────── */
+  .toolbar { display: flex; gap: 10px; margin-bottom: 20px; }
+
+  /* ── 配置卡片 ─────────────────────────── */
+  .stack { display: flex; flex-direction: column; gap: 12px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    padding: 16px 18px;
+    transition: border-color .2s;
+  }
+  .card:hover { border-color: #2b3540; }
+  .card.is-up { border-color: rgba(74, 194, 107, .28); }
+  .card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #4a5561; flex: none; }
+  .dot.up { background: var(--ok); animation: pulse 2.4s ease-out infinite; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(74, 194, 107, .5); }
+    70% { box-shadow: 0 0 0 7px rgba(74, 194, 107, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(74, 194, 107, 0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dot.up { animation: none; }
+    .spin { animation-duration: 1.4s; }
+  }
+  .card-title { font: 600 14px/1.4 var(--mono); letter-spacing: .01em; margin-right: 2px; }
+  .badge {
+    font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+    background: #202730; color: var(--muted); border: 1px solid var(--border);
+  }
+  .badge.up { background: var(--ok-soft); color: var(--ok); border-color: var(--ok-border); }
+  .card-actions { margin-left: auto; display: flex; gap: 6px; }
+  .meta {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px 20px; margin-top: 14px;
+  }
+  .field span { display: block; font-size: 11px; color: var(--faint); margin-bottom: 1px; }
+  .field b {
+    font: 500 12.5px/1.5 var(--mono); color: var(--text);
+    font-variant-numeric: tabular-nums; word-break: break-all;
+  }
+  .stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px 20px;
+    border-top: 1px solid var(--border);
+    margin-top: 14px; padding-top: 12px;
+  }
+  .stat span { display: block; font-size: 11px; color: var(--faint); margin-bottom: 1px; }
+  .stat b { font: 500 12.5px/1.5 var(--mono); color: var(--text); font-variant-numeric: tabular-nums; }
+  .stat b.fresh { color: var(--ok); }
+  .stat b.stale { color: var(--err); }
+
+  /* ── 空态 / 加载 ──────────────────────── */
+  .empty {
+    border: 1px dashed var(--border-strong); border-radius: 14px;
+    text-align: center; padding: 64px 24px; color: var(--muted);
+  }
+  .empty svg { color: #3d4956; margin-bottom: 14px; }
+  .empty p { font-size: 13.5px; margin-bottom: 4px; color: var(--text); font-weight: 600; }
+  .empty small { display: block; font-size: 12.5px; color: var(--faint); margin-bottom: 18px; }
+  .skel {
+    height: 108px; border-radius: 13px; border: 1px solid var(--border);
+    background: linear-gradient(100deg, var(--card) 40%, #1a212c 50%, var(--card) 60%);
+    background-size: 200% 100%; animation: shimmer 1.4s ease infinite;
+  }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  @media (prefers-reduced-motion: reduce) { .skel { animation: none; } }
+
+  /* ── 对话框 ───────────────────────────── */
+  dialog {
+    background: var(--card); color: var(--text);
+    border: 1px solid var(--border-strong); border-radius: 15px;
+    padding: 0; width: min(620px, 92vw); margin: auto;
+    box-shadow: var(--shadow-2);
+  }
+  dialog::backdrop { background: rgba(5, 7, 10, .6); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+  .dlg-head {
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    font-size: 14.5px; font-weight: 650;
+  }
+  .dlg-body { padding: 18px; }
+  .dlg-foot {
+    padding: 12px 18px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px; justify-content: flex-end;
+  }
+  .dlg-err {
+    display: none; background: var(--err-soft); color: var(--err);
+    border: 1px solid rgba(229, 83, 75, .35); border-radius: 9px;
+    padding: 9px 12px; font-size: 12.5px; margin-bottom: 14px;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .dlg-err.show { display: block; }
+
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  input[type=text], textarea {
+    width: 100%; background: #0b0e13;
+    border: 1px solid var(--border-strong); border-radius: 9px;
+    padding: 8px 12px; color: var(--text); caret-color: var(--accent);
+    font: 13px/1.55 var(--mono);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input[type=text]:focus, textarea:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(226, 88, 47, .22);
+  }
+  textarea { min-height: 200px; resize: vertical; }
+  textarea[readonly] { color: #cdd9e5; background: #0b0e13; }
+  .drop {
+    border: 1.5px dashed var(--border-strong); border-radius: 10px;
+    padding: 16px; text-align: center; cursor: pointer;
+    color: var(--faint); font-size: 12.5px; margin-bottom: 16px;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  .drop:hover, .drop.drag { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+  .drop b { color: var(--text); font-weight: 550; }
+  .keys .keyrow { position: relative; margin-bottom: 14px; }
+  .keys .copy {
+    position: absolute; top: 0; right: 0;
+    display: inline-flex; align-items: center; gap: 5px;
+    border: none; background: none; padding: 2px;
+    font: 500 11.5px var(--sans); color: var(--faint); cursor: pointer;
+  }
+  .keys .copy:hover { color: var(--accent); }
+
+  /* ── 确认弹窗 ─────────────────────────── */
+  .confirm-body { font-size: 13px; color: var(--muted); line-height: 1.7; }
+  .confirm-body b { color: var(--text); font-family: var(--mono); }
+
+  /* ── 浮动提示 ─────────────────────────── */
+  .toast {
+    position: fixed; left: 50%; bottom: 26px; z-index: 50;
+    transform: translate(-50%, 12px); opacity: 0; pointer-events: none;
+    max-width: min(640px, 86vw);
+    background: #1d242e; border: 1px solid var(--border-strong); border-radius: 11px;
+    box-shadow: var(--shadow-1);
+    padding: 10px 16px; font-size: 12.5px;
+    transition: transform .22s cubic-bezier(.2,.9,.3,1), opacity .22s;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .toast.show { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; cursor: pointer; }
+  .toast.ok { border-color: var(--ok-border); }
+  .toast.err { border-color: rgba(229, 83, 75, .45); font-family: var(--mono); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
+          <circle cx="12" cy="12" r="6.3" stroke="currentColor" stroke-width="1.7"
+                  stroke-dasharray="5.5 4.4" stroke-linecap="round" transform="rotate(24 12 12)"/>
+          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.7" opacity=".45"
+                  stroke-dasharray="7.5 5.8" stroke-linecap="round" transform="rotate(-40 12 12)"/>
+        </svg>
+      </span>
+      <div class="brand-text">
+        <h1>WireGuard 控制台</h1>
+        <span class="brand-sub">127.0.0.1:<span id="port">8799</span> · 仅本机</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="summary" id="summary"></span>
+      <button class="btn icon" id="btn-refresh" title="刷新状态" aria-label="刷新状态" onclick="refresh()">
+        <svg class="i-refresh" width="15" height="15" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="banner" id="banner">
+    <div class="banner-title">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+      </svg>
+      需要一次性授权 sudo
+    </div>
+    在终端执行下面这条命令，然后刷新页面。作用：允许本面板免密调用 wg / wg-quick。
+    <code id="sudo-cmd"></code>
+    <button class="btn" onclick="copyText($('sudo-cmd').textContent, this)">复制命令</button>
+  </div>
+
+  <div class="toolbar">
+    <button class="btn primary" onclick="openImport()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      导入配置
+    </button>
+    <button class="btn" onclick="openKeys()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+      </svg>
+      生成密钥对
+    </button>
+  </div>
+
+  <div id="list" class="stack">
+    <div class="skel"></div><div class="skel"></div>
+  </div>
+</main>
+
+<!-- 导入配置 -->
+<dialog id="dlgImport">
+  <div class="dlg-head">
+    导入 WireGuard 配置
+    <button class="btn ghost sm" onclick="dlgImport.close()" aria-label="关闭">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="dlg-body">
+    <div class="drop" id="drop" role="button" tabindex="0">
+      点击选择或拖入 <b>.conf</b> 文件（自动填入下方内容）
+    </div>
+    <input type="file" id="f-file" accept=".conf,.txt" hidden>
+    <div class="dlg-err" id="import-err"></div>
+    <label for="f-name">配置名称（将作为接口名：字母 / 数字 / . _ -）</label>
+    <input type="text" id="f-name" placeholder="例如 office-vpn" autocomplete="off">
+    <label for="f-conf">配置内容</label>
+    <textarea id="f-conf" spellcheck="false" placeholder="[Interface]
+PrivateKey = ...
+Address = 10.x.x.x/32
+DNS = 10.x.x.x
+
+[Peer]
+PublicKey = ...
+Endpoint = host:51820
+AllowedIPs = 0.0.0.0/0"></textarea>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn" onclick="dlgImport.close()">取消</button>
+    <button class="btn primary" onclick="doImport()">导入</button>
+  </div>
+</dialog>
+
+<!-- 生成密钥 -->
+<dialog id="dlgKeys">
+  <div class="dlg-head">
+    生成密钥对 / 预共享密钥
+    <button class="btn ghost sm" onclick="dlgKeys.close()" aria-label="关闭">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="dlg-body keys">
+    <div class="keyrow">
+      <label for="k-priv">Private Key（仅自己保留）</label>
+      <button class="copy" onclick="copyText($('k-priv').value, this)">复制</button>
+      <textarea id="k-priv" rows="2" readonly></textarea>
+    </div>
+    <div class="keyrow">
+      <label for="k-pub">Public Key（提供给对方 / 服务器）</label>
+      <button class="copy" onclick="copyText($('k-pub').value, this)">复制</button>
+      <textarea id="k-pub" rows="2" readonly></textarea>
+    </div>
+    <div class="keyrow">
+      <label for="k-psk">Preshared Key（可选，额外加密层）</label>
+      <button class="copy" onclick="copyText($('k-psk').value, this)">复制</button>
+      <textarea id="k-psk" rows="2" readonly></textarea>
+    </div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn" onclick="genKeys()">重新生成</button>
+    <button class="btn primary" onclick="dlgKeys.close()">关闭</button>
+  </div>
+</dialog>
+
+<!-- 删除确认 -->
+<dialog id="dlgConfirm" style="width:min(400px,90vw)">
+  <div class="dlg-head">确认操作</div>
+  <div class="dlg-body">
+    <p class="confirm-body" id="cf-text"></p>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn" onclick="dlgConfirm.close()">取消</button>
+    <button class="btn danger-solid" id="cf-ok" onclick="dlgConfirm.close('ok')">删除</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" onclick="hideToast()"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let state = null;
+const inflight = new Set();
+let toastTimer = null;
+
+/* ── 提示 ── */
+function showToast(text, cls) {
+  const el = $("toast");
+  el.textContent = text;
+  el.className = "toast show " + cls;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, cls === "ok" ? 5000 : 10000);
+}
+function hideToast() { $("toast").className = "toast"; }
+
+/* ── 复制 ── */
+async function copyText(text, btn) {
+  const done = () => {
+    showToast("已复制到剪贴板", "ok");
+    if (btn) {
+      const old = btn.textContent;
+      btn.textContent = "✓ 已复制";
+      setTimeout(() => btn.textContent = old, 1500);
+    }
+  };
+  try {
+    await navigator.clipboard.writeText(text);
+    done();
+  } catch (_) {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); done(); }
+    catch (e) { showToast("复制失败，请手动选择复制", "err"); }
+    ta.remove();
+  }
+}
+
+/* ── 确认弹窗（WKWebView 无原生 confirm，用自定义对话框代替）── */
+function confirmDlg(text, okLabel) {
+  return new Promise(resolve => {
+    $("cf-text").textContent = text;
+    $("cf-ok").textContent = okLabel || "删除";
+    const dlg = $("dlgConfirm");
+    dlg.returnValue = "";
+    dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok"), { once: true });
+    dlg.showModal();
+  });
+}
+
+/* ── 格式化 ── */
+function fmtBytes(n) {
+  if (!n) return "0 B";
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + u[i];
+}
+function fmtHandshake(ts) {
+  if (!ts) return "从未握手";
+  const s = Math.floor(Date.now() / 1000) - ts;
+  if (s < 0) return new Date(ts * 1000).toLocaleString();
+  if (s < 120) return s + " 秒前";
+  if (s < 3600) return Math.floor(s / 60) + " 分钟前";
+  if (s < 172800) return Math.floor(s / 3600) + " 小时前";
+  return "超过 2 天未握手";
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+/* ── 数据 ── */
+async function refresh() {
+  const btn = $("btn-refresh");
+  btn.classList.add("loading");
+  try {
+    const r = await fetch("/api/status");
+    state = await r.json();
+    render();
+  } catch (e) { showToast("加载失败: " + e, "err"); }
+  btn.classList.remove("loading");
+}
+
+function field(label, value) {
+  return value ? `<div class="field"><span>${label}</span><b>${esc(value)}</b></div>` : "";
+}
+
+function render() {
+  $("banner").style.display = state.sudo_ready ? "none" : "block";
+  if (state.port) $("port").textContent = state.port;
+
+  const n = state.profiles.length;
+  const up = Object.keys(state.active).length;
+  $("summary").innerHTML = n
+    ? `${n} 个配置 · ${up ? `<b>${up} 条活动</b>` : "无活动隧道"}`
+    : "";
+
+  const list = $("list");
+  if (!n) {
+    list.innerHTML = `<div class="empty">
+      <svg width="46" height="46" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
+        <circle cx="12" cy="12" r="6.3" stroke="currentColor" stroke-width="1.5"
+                stroke-dasharray="5.5 4.4" stroke-linecap="round" transform="rotate(24 12 12)"/>
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5"
+                stroke-dasharray="7.5 5.8" stroke-linecap="round" transform="rotate(-40 12 12)"/>
+      </svg>
+      <p>还没有配置文件</p>
+      <small>导入一个 .conf，或先在上方生成密钥对</small>
+      <button class="btn primary" onclick="openImport()">导入第一个配置</button>
+    </div>`;
+    return;
+  }
+
+  list.innerHTML = state.profiles.map(p => {
+    const act = state.active[p.name];
+    const live = !!act;
+    const peer = act && act.peers[0];
+    const busy = inflight.has(p.name);
+    const hsFresh = peer && peer.latest_handshake &&
+      Date.now() / 1000 - peer.latest_handshake < 180;
+    return `<article class="card${live ? " is-up" : ""}">
+      <div class="card-head">
+        <span class="dot${live ? " up" : ""}" aria-hidden="true"></span>
+        <h2 class="card-title">${esc(p.name)}</h2>
+        <span class="badge${live ? " up" : ""}">${live ? "已连接" : "未连接"}</span>
+        <div class="card-actions">
+          <button class="btn primary sm" ${live || busy ? "disabled" : ""} data-action="up" data-name="${esc(p.name)}">
+            ${busy && !live ? '<span class="spin"></span>连接中' : "连接"}
+          </button>
+          <button class="btn sm" ${!live || busy ? "disabled" : ""} data-action="down" data-name="${esc(p.name)}">
+            ${busy && live ? '<span class="spin"></span>断开中' : "断开"}
+          </button>
+          <button class="btn danger sm" ${busy ? "disabled" : ""} data-action="del" data-name="${esc(p.name)}">删除</button>
+        </div>
+      </div>
+      <div class="meta">
+        ${field("接口地址", p.address)}
+        ${field("Endpoint", p.endpoint)}
+        ${field("DNS", p.dns)}
+        ${field("Peer 公钥", p.peer_key)}
+      </div>
+      ${peer ? `<div class="stats">
+        <div class="stat"><span>最近握手</span><b class="${hsFresh ? "fresh" : "stale"}">${fmtHandshake(peer.latest_handshake)}</b></div>
+        <div class="stat"><span>接收</span><b>${fmtBytes(peer.rx)}</b></div>
+        <div class="stat"><span>发送</span><b>${fmtBytes(peer.tx)}</b></div>
+        ${peer.allowed_ips ? `<div class="stat"><span>AllowedIPs</span><b>${esc(peer.allowed_ips)}</b></div>` : ""}
+      </div>` : ""}
+    </article>`;
+  }).join("");
+}
+
+/* ── 卡片按钮（事件委托）── */
+$("list").addEventListener("click", e => {
+  const btn = e.target.closest("[data-action]");
+  if (!btn || btn.disabled) return;
+  const name = btn.dataset.name;
+  if (btn.dataset.action === "up") toggle(name, "up");
+  else if (btn.dataset.action === "down") toggle(name, "down");
+  else if (btn.dataset.action === "del") doDelete(name);
+});
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body || {})
+  });
+  return r.json();
+}
+
+async function toggle(name, dir) {
+  if (inflight.has(name)) return;
+  inflight.add(name);
+  render();
+  showToast((dir === "up" ? "正在连接 " : "正在断开 ") + name + " …");
+  try {
+    const d = await post("/api/" + dir, {name});
+    showToast(d.message || (d.ok ? "成功" : "失败"), d.ok ? "ok" : "err");
+  } catch (e) { showToast("请求失败: " + e, "err"); }
+  inflight.delete(name);
+  refresh();
+}
+
+async function doDelete(name) {
+  const yes = await confirmDlg(
+    `确定删除配置「${name}」吗？\n如果它正在连接，会先自动断开。`,
+    "删除");
+  if (!yes) return;
+  try {
+    const d = await post("/api/delete", {name});
+    showToast(d.error || "已删除 " + name, d.error ? "err" : "ok");
+  } catch (e) { showToast("请求失败: " + e, "err"); }
+  refresh();
+}
+
+/* ── 导入 ── */
+function openImport() {
+  $("import-err").className = "dlg-err";
+  dlgImport.showModal();
+}
+function importError(msg) {
+  const el = $("import-err");
+  el.textContent = msg;
+  el.className = "dlg-err show";
+}
+
+$("drop").addEventListener("click", () => $("f-file").click());
+$("drop").addEventListener("keydown", e => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("f-file").click(); }
+});
+["dragover", "dragenter"].forEach(ev => $("drop").addEventListener(ev, e => {
+  e.preventDefault(); $("drop").classList.add("drag");
+}));
+["dragleave", "drop"].forEach(ev => $("drop").addEventListener(ev, e => {
+  e.preventDefault(); $("drop").classList.remove("drag");
+}));
+$("drop").addEventListener("drop", e => loadFile(e.dataTransfer.files[0]));
+
+$("f-file").addEventListener("change", e => loadFile(e.target.files[0]));
+function loadFile(f) {
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    $("f-conf").value = reader.result;
+    $("f-name").value = f.name.replace(/\.conf$/i, "");
+  };
+  reader.readAsText(f);
+}
+
+async function doImport() {
+  const d = await post("/api/import", {
+    name: $("f-name").value.trim(), config: $("f-conf").value
+  }).catch(e => ({error: "请求失败: " + e}));
+  if (d.error) { importError(d.error); return; }
+  dlgImport.close();
+  $("f-conf").value = ""; $("f-name").value = ""; $("f-file").value = "";
+  showToast("已导入 " + d.name, "ok");
+  refresh();
+}
+
+/* ── 密钥 ── */
+function openKeys() { dlgKeys.showModal(); genKeys(); }
+async function genKeys() {
+  const d = await post("/api/genkeys").catch(e => ({error: "请求失败: " + e}));
+  if (d.error) { showToast(d.error, "err"); return; }
+  $("k-priv").value = d.private_key;
+  $("k-pub").value = d.public_key;
+  $("k-psk").value = d.preshared_key || "（生成失败）";
+}
+
+/* ── sudo 命令 ── */
+$("sudo-cmd").textContent = location.port
+  ? 'sudo sh -c \'echo "ycui ALL=(root) NOPASSWD: /opt/homebrew/bin/wg-quick, /opt/homebrew/bin/wg" > /etc/sudoers.d/wireguard-gui && chmod 440 /etc/sudoers.d/wireguard-gui\''
+  : "";
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refresh();
+});
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>
