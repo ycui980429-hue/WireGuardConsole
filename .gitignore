@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# 编译器产物
+app/make_icon
+app/build/
+app/WireGuard Console.app/
+/tmp/
+
+# Python
+*.pyc
+__pycache__/
+
+# 本地会话/工具目录（含调试记录、计划文件、配置文件备份）
+.workbuddy/
+.zcode/
+.impeccable/
+
+# 用户实际配置绝不入库（可能含私钥）
+*.conf
