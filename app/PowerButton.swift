@@ -290,6 +290,8 @@ final class HoverRow: NSView {
 final class DropdownOverlay: NSView {
     private let dim = NSView()
     private let card = NSView()
+    private let rowClip = NSView()
+    private let rowScroll = NSScrollView()
     private var rows: [HoverRow] = []
     private var onDismiss: (() -> Void)?
 
@@ -322,6 +324,18 @@ final class DropdownOverlay: NSView {
         card.layer?.shadowOffset = CGSize(width: 0, height: -5)
         card.autoresizingMask = []
         addSubview(card)
+
+        // 行放在滚动视图里：配置多、高度不够时可以滚动，
+        // 而不是把超出的行直接隐藏（那样后排永远选不到）
+        rowScroll.drawsBackground = false
+        rowScroll.hasVerticalScroller = true
+        rowScroll.autohidesScrollers = true
+        rowScroll.borderType = .noBorder
+        rowScroll.scrollerStyle = .overlay
+        rowScroll.autoresizingMask = []
+        rowClip.wantsLayer = true
+        rowScroll.documentView = rowClip
+        card.addSubview(rowScroll)
 
         // 逐行创建（frame 布局）
         for item in items {
@@ -356,7 +370,7 @@ final class DropdownOverlay: NSView {
                 onPick(item.title)
                 self?.dismiss()
             }
-            card.addSubview(row)
+            rowClip.addSubview(row)
             rows.append(row)
         }
         self.itemWidth = width
@@ -402,15 +416,21 @@ final class DropdownOverlay: NSView {
     }
 
     private func layoutRows() {
-        let w = card.bounds.width - Self.padH * 2
-        // 可视区域从顶部往下排（card 坐标 y 向上，所以从顶部开始递减）
-        let visibleCount = max(1, Int((card.bounds.height - Self.padV * 2) / Self.rowH))
-        let startTop = card.bounds.height - Self.padV
+        // 可视区域（扣掉内边距）交给滚动视图，内容再高也能滚到
+        let viewH = max(card.bounds.height - Self.padV * 2, Self.rowH)
+        rowScroll.frame = NSRect(x: Self.padH, y: Self.padV,
+                                 width: card.bounds.width - Self.padH * 2,
+                                 height: viewH)
+        let docH = max(CGFloat(rows.count) * Self.rowH, viewH)
+        rowClip.frame = NSRect(x: 0, y: 0,
+                               width: rowScroll.contentView.bounds.width, height: docH)
 
+        let w = rowClip.bounds.width
+        let startTop = docH - Self.padV
         for (i, row) in rows.enumerated() {
             let rowY = startTop - CGFloat(i + 1) * Self.rowH
-            row.frame = NSRect(x: Self.padH, y: rowY, width: w, height: Self.rowH)
-            row.isHidden = i >= visibleCount    // 超出可视区的行隐藏（简化分页）
+            row.frame = NSRect(x: 0, y: rowY, width: w, height: Self.rowH)
+            row.isHidden = false
             row.layout()
         }
     }
