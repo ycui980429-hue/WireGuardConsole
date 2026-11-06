@@ -1,6 +1,7 @@
 // main.swift — WireGuard 控制台 · 原生 AppKit 界面
 // 结构：侧边栏（配置列表，材质背景）+ 详情（状态/统计/操作）+ 菜单栏常驻快速控制
 import AppKit
+import Network
 
 // MARK: - 工具
 
@@ -9,10 +10,6 @@ func copyText(_ text: String) {
     let pb = NSPasteboard.general
     pb.clearContents()
     pb.setString(text, forType: .string)
-}
-
-func fmtBytes(_ n: Int) -> String {
-    ByteCountFormatter.string(fromByteCount: Int64(n), countStyle: .binary)
 }
 
 func fmtHandshake(_ date: Date?) -> String {
@@ -58,7 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var windowController: MainWindowController?
     var statusItem: NSStatusItem?
     var statusMenu: StatusMenu?
-    private var timer: Timer?
+    /// 网络路径监听：换 Wi-Fi / 插网线时触发重连
+    private let pathMonitor = NWPathMonitor()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         WG.ensureDirs()
@@ -83,7 +81,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         store.startPolling(every: 5)
         syncUI()
+        observeWakeAndNetwork()
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// 睡眠唤醒 / 网络切换后主动重连：macOS 上睡眠会让隧道静默失效，
+    /// App 仅靠握手轮询不一定能及时感知（官方客户端用 NetworkExtension 自动处理，
+    /// 这里用系统通知补上）。
+    private func observeWakeAndNetwork() {
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(forName: NSWorkspace.didWakeNotification,
+                       object: nil, queue: .main) { [weak self] _ in
+            self?.store.handleWake()
+        }
+        // 网络路径变化（换 Wi-Fi、插网线、断网恢复）
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.store.handleWake()
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue.global(qos: .utility))
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -290,6 +309,46 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         }
         config.onEdit = { [weak self] name in self?.presentEditSheet(name) }
         config.onDelete = { [weak self] name in self?.confirmDelete(name) }
+        config.onAuthorize = { [weak self] in self?.presentAuthorizeSheet() }
+    }
+
+    /// 一键授权 sudoers：弹系统管理员密码框，App 不接触密码
+    private func presentAuthorizeSheet() {
+        let alert = NSAlert()
+        alert.messageText = "授予免密调用权限"
+        alert.informativeText = """
+        App 需要免密执行 wg / wg-quick 才能建立隧道。
+
+        将要写入 /etc/sudoers.d/wireguard-gui：
+        \(WG.sudoersContent())
+        授权范围仅限这两个命令，不是全局免密。撤销命令：
+        sudo rm \(WG.sudoersPath)
+        """
+        alert.addButton(withTitle: "继续授权")
+        alert.addButton(withTitle: "取消")
+        alert.alertStyle = .informational
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = WG.installSudoers()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if result.ok {
+                    self.store.refresh()
+                    let ok = NSAlert()
+                    ok.messageText = "授权完成"
+                    ok.informativeText = "现在可以一键连接了。"
+                    ok.addButton(withTitle: "好")
+                    ok.runModal()
+                } else if result.message != "已取消授权" {
+                    let fail = NSAlert()
+                    fail.messageText = "授权未完成"
+                    fail.informativeText = result.message
+                    fail.addButton(withTitle: "好")
+                    fail.runModal()
+                }
+            }
+        }
     }
 
     /// 删除前确认（自定义弹窗，与整体风格一致）
@@ -347,6 +406,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         logs.setProfile(selectedProfile)
         logs.refresh()
         config.reload(profiles: store.profiles, activeName: selectedProfile)
+        config.setSudoReady(store.sudoReady)
     }
 
     func presentImportSheet() {
@@ -364,7 +424,9 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     func presentErrorSheet(title: String, message: String) {
-        let c = ErrorSheetController(title: title, message: message)
+        // 该配置若已有诊断结论，一并展示可操作的下一步
+        let finding = store.lastDiagnosis[title]
+        let c = ErrorSheetController(title: title, message: message, finding: finding)
         c.onClose = { [weak self] in self?.activeSheet = nil }
         activeSheet = c
         c.beginAsSheet(of: window)
@@ -1057,17 +1119,54 @@ final class ErrorSheetController: NSObject {
 
     private let errorTitle: String
     private let errorText: String
+    private let finding: Diagnose.Finding?
 
-    init(title: String, message: String) {
+    init(title: String, message: String, finding: Diagnose.Finding? = nil) {
         errorTitle = "操作失败 · \(title)"
         errorText = message
+        self.finding = finding
         super.init()
     }
 
     private func buildUI() {
         sheet.title = "操作失败"
+        sheet.appearance = NSAppearance(named: .aqua)
+        sheet.backgroundColor = Theme.bg
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = Theme.text
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        // 诊断建议卡（有结论时显示在最上方，比原始输出先被看到）
+        let adviceCard = NSView()
+        adviceCard.wantsLayer = true
+        adviceCard.layer?.backgroundColor = Theme.orange.withAlphaComponent(0.10).cgColor
+        adviceCard.layer?.cornerRadius = 8
+        adviceCard.translatesAutoresizingMaskIntoConstraints = false
+        adviceCard.isHidden = (finding == nil)
+
+        let adviceStack = NSStackView()
+        adviceStack.orientation = .vertical
+        adviceStack.alignment = .leading
+        adviceStack.spacing = 4
+        adviceStack.translatesAutoresizingMaskIntoConstraints = false
+        if let f = finding {
+            let head = label("诊断 · \(f.title)", size: 12, weight: .semibold, color: Theme.orange)
+            adviceStack.addArrangedSubview(head)
+            for a in f.advice {
+                let l = NSTextField(wrappingLabelWithString: "→ \(a)")
+                l.font = .systemFont(ofSize: 12)
+                l.textColor = Theme.muted
+                adviceStack.addArrangedSubview(l)
+                l.widthAnchor.constraint(equalTo: adviceStack.widthAnchor).isActive = true
+            }
+        }
+        adviceCard.addSubview(adviceStack)
+        NSLayoutConstraint.activate([
+            adviceStack.topAnchor.constraint(equalTo: adviceCard.topAnchor, constant: 9),
+            adviceStack.bottomAnchor.constraint(equalTo: adviceCard.bottomAnchor, constant: -9),
+            adviceStack.leadingAnchor.constraint(equalTo: adviceCard.leadingAnchor, constant: 11),
+            adviceStack.trailingAnchor.constraint(equalTo: adviceCard.trailingAnchor, constant: -11),
+        ])
 
         message.font = monoFont(12)
         message.isEditable = false
@@ -1094,16 +1193,23 @@ final class ErrorSheetController: NSObject {
         let content = NSView()
         sheet.contentView = content
         content.addSubview(titleLabel)
+        content.addSubview(adviceCard)
         content.addSubview(messageScroll)
         content.addSubview(buttons)
         NSLayoutConstraint.activate([
             titleLabel.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
             titleLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
             titleLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
-            messageScroll.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 10),
+
+            adviceCard.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 10),
+            adviceCard.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
+            adviceCard.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
+
+            messageScroll.topAnchor.constraint(equalTo: adviceCard.bottomAnchor, constant: 10),
             messageScroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
             messageScroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
             messageScroll.bottomAnchor.constraint(equalTo: buttons.topAnchor, constant: -12),
+            messageScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 80),
             buttons.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
             buttons.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
             buttons.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
@@ -1245,10 +1351,6 @@ final class DeleteConfirmController: NSObject {
     }
 
     @objc private func cancelTapped(_ sender: Any?) {
-        sheet.sheetParent?.endSheet(sheet)
-    }
-
-    @objc private func cancel(_ sender: Any?) {
         sheet.sheetParent?.endSheet(sheet)
     }
 
