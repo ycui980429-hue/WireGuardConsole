@@ -2,8 +2,9 @@
 import AppKit
 
 // MARK: - 配色
+// 固定浅色主题（用户明确要求：纯白卡片 + #eff1f3 浅灰底，深色方案已废弃）。
+// 窗口在 MainWindowController 里固定 .aqua，避免系统深色模式下配色被系统重绘打乱。
 enum Theme {
-    // 浅色主题：白色卡片 + 浅灰底，参考 iOS/macOS 设置页
     static let bg = NSColor(red: 0.937, green: 0.945, blue: 0.953, alpha: 1)        // #eff1f3 页面底
     static let card = NSColor.white                                                  // #ffffff 卡片
     static let cardBorder = NSColor(red: 0.878, green: 0.890, blue: 0.902, alpha: 1) // #e0e3e6 描边
@@ -320,7 +321,7 @@ final class HomeViewController: NSViewController {
             powerBtn.startSpinning()
             statusTitle.stringValue = "连接中…"
             statusTitle.textColor = Theme.orange
-            statusSub.stringValue = "正在建立接口"
+            statusSub.stringValue = "正在建立接口，点击可取消"
         case .awaitingHandshake:
             powerBtn.mode = .connecting
             powerBtn.startSpinning()
@@ -338,7 +339,14 @@ final class HomeViewController: NSViewController {
             powerBtn.stopSpinning()
             statusTitle.stringValue = "连接失败"
             statusTitle.textColor = Theme.red
-            statusSub.stringValue = "点击重试，或查看日志"
+            // 优先展示诊断结论，比笼统的"点击重试"更有用
+            if let d = store.lastDiagnosis[name] {
+                statusSub.stringValue = d.title
+            } else if case .failed(let reason) = phase {
+                statusSub.stringValue = reason
+            } else {
+                statusSub.stringValue = "点击重试，或查看日志"
+            }
         }
 
         // 速率
@@ -347,9 +355,15 @@ final class HomeViewController: NSViewController {
 
         // 节点
         nodeNameLabel.stringValue = name
-        nodeNameLabel.textColor = (name == currentProfile) ? Theme.text : Theme.text
-        nodeAddrLabel.stringValue = profile.endpoint.isEmpty ? profile.address : profile.endpoint
-        nodeAddrLabel.textColor = Theme.faint
+        nodeNameLabel.textColor = Theme.text
+        // 副标题优先显示出口 IP（已连接且探测成功），能直观确认流量确实走了隧道
+        if let ip = store.exitIP[name], phase == .connected {
+            nodeAddrLabel.stringValue = "出口 \(ip)"
+            nodeAddrLabel.textColor = Theme.green
+        } else {
+            nodeAddrLabel.stringValue = profile.endpoint.isEmpty ? profile.address : profile.endpoint
+            nodeAddrLabel.textColor = Theme.faint
+        }
         nodeDot?.live = (phase == .connected)
 
         // 握手 / 时长
@@ -377,9 +391,25 @@ final class HomeViewController: NSViewController {
         let phase = store.phase(for: name)
         switch phase {
         case .disconnected, .failed:
+            // 已有别的隧道在跑时提醒：多隧道并行会让路由与 DNS 互相覆盖
+            let others = store.running.filter { $0 != name }
+            if !others.isEmpty {
+                let alert = NSAlert()
+                alert.messageText = "已有隧道在运行"
+                alert.informativeText = """
+                当前还连接着：\(others.joined(separator: "、"))
+                再连接「\(name)」可能导致路由与 DNS 互相覆盖，网络行为不可预期。
+                建议先断开已有隧道。
+                """
+                alert.addButton(withTitle: "仍然连接")
+                alert.addButton(withTitle: "取消")
+                alert.alertStyle = .warning
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+            }
             store.connect(name)
         case .connecting:
-            break
+            // 不再静默忽略：wg-quick up 最长可能卡 60 秒，需要能中止
+            store.cancelConnect(name)
         case .awaitingHandshake, .connected:
             store.disconnect(name)
         }
