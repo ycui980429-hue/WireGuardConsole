@@ -51,6 +51,9 @@ final class StatusDotView: NSView {
 // MARK: - 应用代理
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// 全局强引用，防止 delegate 被释放（NSApplication.delegate 是 weak）
+    static var retained: AppDelegate?
+
     let store = ProfileStore()
     var windowController: MainWindowController?
     var statusItem: NSStatusItem?
@@ -108,8 +111,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { windowController?.showWindow(nil) }
+        // 点 Dock 图标、open 命令都会走到这里。窗口关闭后必须能重新显示，
+        // 否则进程还在菜单栏却再也打不开主界面。
+        windowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
         return true
+    }
+
+    /// 最小化状态下点 Dock 图标，macOS 会调这个而不是 shouldHandleReopen。
+    /// 不实现的话窗口会一直留在 Dock 里恢复不了。
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard let wc = windowController else { return }
+        if wc.window.isMiniaturized {
+            wc.window.deminiaturize(nil)
+        }
     }
 
     func syncUI() {
@@ -258,6 +273,10 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         window.backgroundColor = Theme.bg
         window.minSize = NSSize(width: 380, height: 560)
         window.appearance = NSAppearance(named: .aqua)
+        // 默认值是 true：关闭时窗口会被 release，但本类用 `let window` 强持有，
+        // ARC 下会过度释放 —— 之后 makeKeyAndOrderFront 就再也没反应，
+        // 表现为"关掉窗口后点 Dock 图标打不开"。必须关掉。
+        window.isReleasedWhenClosed = false
         super.init()
         window.delegate = self
 
@@ -397,6 +416,9 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     }
 
     func showWindow(_ sender: Any?) {
+        // 关闭过的窗口再 makeKeyAndOrderFront 前先确保集合行为正常：
+        // 若被最小化过，先 deminiaturize 才能显示出来
+        if window.isMiniaturized { window.deminiaturize(sender) }
         window.makeKeyAndOrderFront(sender)
     }
 
@@ -1231,7 +1253,11 @@ final class ErrorSheetController: NSObject {
 // MARK: - 启动
 
 let app = NSApplication.shared
+// NSApplication.delegate 是 weak 引用。顶层 let 在 app.run() 返回后仍存活，
+// 但为确保任何情况下都不被回收，这里再挂一个全局强引用。
+// （若 delegate 被释放，菜单栏菜单、Dock 重开、状态回调都会静默失效。）
 let appDelegate = AppDelegate()
+AppDelegate.retained = appDelegate
 app.delegate = appDelegate
 app.setActivationPolicy(.regular)
 buildMainMenu()
