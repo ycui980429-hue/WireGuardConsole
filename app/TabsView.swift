@@ -8,7 +8,10 @@ final class LogViewController: NSViewController {
     private let textView = NSTextView()
     private let scroll = NSScrollView()
     private let titleLabel = label("日志", size: 12, weight: .semibold, color: Theme.text)
-    private var lastCount = -1
+    /// 上次渲染时的日志版本号（不能用行数：日志有 300 条上限，长度会饱和）
+    private var lastRevision = -1
+    /// 用户是否贴着底部；贴底才自动跟随，否则保留阅读位置
+    private var stickToBottom = true
     /// 空态提示（覆盖在滚动区中央）
     private let emptyLabel: NSTextField = {
         let l = NSTextField(wrappingLabelWithString: "")
@@ -84,7 +87,8 @@ final class LogViewController: NSViewController {
     func setProfile(_ name: String?) {
         if profileName != name {
             profileName = name
-            lastCount = -1
+            lastRevision = -1
+            stickToBottom = true
         }
         titleLabel.stringValue = name.map { "日志 · \($0)" } ?? "日志"
     }
@@ -95,8 +99,9 @@ final class LogViewController: NSViewController {
             return
         }
         let lines = store.logLines(for: name)
-        guard lines.count != lastCount else { return }
-        lastCount = lines.count
+        let revision = store.logRevision[name] ?? 0
+        guard revision != lastRevision else { return }
+        lastRevision = revision
         if !lines.isEmpty { hideEmptyMessage() }
 
         let attr = NSMutableAttributedString()
@@ -118,8 +123,12 @@ final class LogViewController: NSViewController {
             showEmptyMessage("暂无日志\n连接后会显示 wg-quick 的完整输出与诊断")
             return
         }
+        let docHeight = scroll.documentView?.frame.height ?? 0
+        let visibleBottom = scroll.contentView.bounds.maxY
+        // 距底部 < 30pt 视为"贴着底部"，此时才自动滚动
+        stickToBottom = visibleBottom >= docHeight - 30
         textView.textStorage?.setAttributedString(attr)
-        textView.scrollToEndOfDocument(nil)
+        if stickToBottom { textView.scrollToEndOfDocument(nil) }
     }
 
     /// 空态提示：灰色 14px，居中显示在滚动区中央
@@ -127,12 +136,12 @@ final class LogViewController: NSViewController {
         emptyLabel.stringValue = text
         emptyLabel.isHidden = false
         textView.string = ""
-        lastCount = -2
+        lastRevision = -2
     }
 
     private func hideEmptyMessage() {
         emptyLabel.isHidden = true
-        if lastCount == -2 { lastCount = -1 }
+        if lastRevision == -2 { lastRevision = -1 }
     }
 
     @objc private func copyAll(_ sender: Any?) {
@@ -155,6 +164,8 @@ final class ConfigViewController: NSViewController, NSTableViewDataSource, NSTab
     private let table = NSTableView()
     private let scroll = NSScrollView()
     private let emptyHint = label("还没有配置，点击右上角「导入配置」", size: 12, color: Theme.faint)
+    /// 未授权时出现的「授权」按钮
+    private var authButton: NSButton?
 
     /// 选中某条配置（只更新当前项，不跳页）
     var onSelect: ((String) -> Void)?
@@ -163,6 +174,7 @@ final class ConfigViewController: NSViewController, NSTableViewDataSource, NSTab
     var onDelete: ((String) -> Void)?
     var onEdit: ((String) -> Void)?
     var onConnect: ((String) -> Void)?
+    var onAuthorize: (() -> Void)?
 
     private var profiles: [Profile] = []
     /// 当前正在操作的配置（决定是否显示"已连接"样式）
@@ -196,12 +208,23 @@ final class ConfigViewController: NSViewController, NSTableViewDataSource, NSTab
         keysBtn.image = NSImage(systemSymbolName: "key.horizontal", accessibilityDescription: nil)
         keysBtn.imagePosition = .imageLeading
 
+        // 未授权时才显示，避免长期占位
+        let authBtn = NSButton(title: "授权", target: self, action: #selector(authTapped(_:)))
+        authBtn.bezelStyle = .rounded
+        authBtn.controlSize = .small
+        authBtn.image = NSImage(systemSymbolName: "lock.open", accessibilityDescription: nil)
+        authBtn.imagePosition = .imageLeading
+        authBtn.toolTip = "授予免密调用 wg-quick 的权限（只放行这一个命令）"
+        authBtn.bezelColor = Theme.orange
+        authBtn.isHidden = true
+        authButton = authBtn
+
         let titleCol = NSStackView(views: [title, countLabel])
         titleCol.orientation = .horizontal
         titleCol.alignment = .firstBaseline
         titleCol.spacing = 6
 
-        let header = NSStackView(views: [titleCol, NSView(), keysBtn, importBtn])
+        let header = NSStackView(views: [titleCol, NSView(), authBtn, keysBtn, importBtn])
         header.orientation = .horizontal
         header.spacing = 6
         header.translatesAutoresizingMaskIntoConstraints = false
@@ -248,12 +271,20 @@ final class ConfigViewController: NSViewController, NSTableViewDataSource, NSTab
 
     @objc private func importTapped(_ sender: Any?) { onImport?() }
     @objc private func keysTapped(_ sender: Any?) { onKeys?() }
+    @objc private func authTapped(_ sender: Any?) { onAuthorize?() }
+
+    /// 由 reload 调用，根据授权状态决定是否显示「授权」按钮
+    func setSudoReady(_ ready: Bool) {
+        authButton?.isHidden = ready
+    }
 
     func reload(profiles: [Profile], activeName: String?) {
-        let changed = profiles != self.profiles || activeName != self.activeName
         self.profiles = profiles
         self.activeName = activeName
-        if changed { table.reloadData() }
+        // 不能只在列表变化时 reloadData：连接阶段（连接中/已连接/失败）变化时
+        // profiles 与 activeName 都可能不变，行里的状态文字会卡在旧值。
+        // 代价只是每 5 秒重建可见行，量级很小。
+        table.reloadData()
         emptyHint.isHidden = !profiles.isEmpty
         if let c = view.subviews.compactMap({ $0 as? NSStackView })
             .flatMap({ $0.arrangedSubviews })
