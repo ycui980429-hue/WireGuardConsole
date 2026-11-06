@@ -21,6 +21,23 @@ enum WGError: LocalizedError {
 // MARK: - Shell 执行
 
 enum Shell {
+    /// 子进程环境：显式补上 wg / wg-quick 所在目录。
+    /// App 从 Finder 启动时 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin，
+    /// 而 wg-quick 的 shebang 是 `#!/usr/bin/env bash`，会解析到系统 bash 3.2 →
+    /// 报 "Version mismatch: bash 3 detected, when bash 4+ required"。
+    /// 在 Process 上设置 environment 可透传给 sudo 及其子进程（实测有效）。
+    static var baseEnvironment: [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        // 只在真正存在工具的目录里挑，并保持 Apple Silicon → Intel → MacPorts 的优先顺序
+        let candidates = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
+            .filter { FileManager.default.fileExists(atPath: $0) }
+        var parts = (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+            .split(separator: ":").map(String.init)
+        parts.removeAll { candidates.contains($0) }        // 先剔除已有的，避免重复
+        env["PATH"] = (candidates + parts).joined(separator: ":")
+        return env
+    }
+
     /// 同步执行并捕获输出。
     /// 读端在后台线程并发消费：若等进程退出后才读，子进程输出超过管道缓冲
     /// （64KB）就会写阻塞，被误判成执行超时。
@@ -29,6 +46,7 @@ enum Shell {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: launchPath)
         p.arguments = args
+        p.environment = baseEnvironment
         let outPipe = Pipe(), errPipe = Pipe(), inPipe = Pipe()
         p.standardOutput = outPipe
         p.standardError = errPipe
@@ -157,6 +175,16 @@ enum WG {
     static let wgQuickPath: String = findTool("wg-quick")
     static let sudo = "/usr/bin/sudo"
 
+    /// 系统 bash 是 3.2，而 wg-quick 第 42 行硬性要求 bash 4+。
+    /// PATH 里补上 Homebrew 目录后，`#!/usr/bin/env bash` 就能解析到 bash 5，
+    /// 不需要改动 sudoers，也不需要自己拼 bash 命令。
+    /// 这里只保留一个前置校验，好在最坏情况下给出可读的错误。
+    static var bashTooOld: Bool {
+        let (_, out, _) = Shell.run("/usr/bin/env", ["bash", "-c", "echo ${BASH_VERSINFO[0]}"],
+                                    timeout: 5)
+        return (Int(out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0) < 4
+    }
+
     private static func findTool(_ name: String) -> String {
         let candidates = [
             "/opt/homebrew/bin/\(name)",     // Apple Silicon Homebrew
@@ -196,6 +224,19 @@ enum WG {
 
     static func sudoReady() -> Bool {
         Shell.run(sudo, ["-n", "-l", wgQuickPath]).rc == 0
+    }
+
+    /// 环境自检：返回 nil 表示一切就绪，否则是可读的问题描述。
+    /// 与 sudo 授权分开判断，便于配置页给出针对性提示。
+    static func environmentIssue() -> String? {
+        if !toolsInstalled {
+            return "未找到 wg / wg-quick，请先安装：brew install wireguard-tools"
+        }
+        if bashTooOld {
+            return "wg-quick 需要 bash 4+，但当前 PATH 只能解析到系统 bash 3。"
+                 + "请安装 Homebrew bash（brew install bash）后重试。"
+        }
+        return nil
     }
 
     /// sudoers 白名单文件路径
@@ -536,6 +577,12 @@ enum Diagnose {
     static func from(output: String, profile: Profile, peer: PeerStatus?) -> Finding? {
         let low = output.lowercased()
 
+        if low.contains("version mismatch") && low.contains("bash") {
+            return Finding(title: "bash 版本过低",
+                           advice: ["wg-quick 需要 bash 4+，macOS 自带的是 3.2",
+                                    "执行 brew install bash 安装新版",
+                                    "装好后重开 App（PATH 需要重新探测）"])
+        }
         if low.contains("is not a wireguard interface") {
             return Finding(title: "接口状态不一致",
                            advice: ["可能已由命令行或其他工具断开",
