@@ -11,13 +11,21 @@ APP="$BUILD_DIR/$APP_NAME.app"
 INSTALL_DIR="/Applications/$APP_NAME.app"
 
 echo "▸ 编译原生 App (swiftc + AppKit)"
-swiftc -O app/main.swift app/WGCore.swift app/PowerButton.swift app/HomeView.swift app/TabsView.swift -o /tmp/WireGuardConsole
+# 显式列出源文件：不能用 app/*.swift，那会把 make_icon.swift 的顶层表达式一起编进去
+SOURCES=(app/main.swift app/WGCore.swift app/PowerButton.swift app/HomeView.swift app/TabsView.swift)
+for f in "${SOURCES[@]}"; do
+  [ -f "$f" ] || { echo "✗ 缺少源文件: $f"; exit 1; }
+done
+# 二进制放在本次构建专属的临时目录（不用固定 /tmp 路径，避免并发构建互相踩）
+TMP_BIN="$(mktemp -d)/WireGuardConsole"
+trap 'rm -rf "$(dirname "$TMP_BIN")"' EXIT
+swiftc -O "${SOURCES[@]}" -o "$TMP_BIN"
 
 echo "▸ 组装 $APP"
 rm -rf "$BUILD_DIR"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp app/Info.plist "$APP/Contents/Info.plist"
-cp /tmp/WireGuardConsole "$APP/Contents/MacOS/WireGuardConsole"
+cp "$TMP_BIN" "$APP/Contents/MacOS/WireGuardConsole"
 
 echo "▸ 应用图标"
 ICON_SRC="app/$APP_NAME.app/Contents/Resources/AppIcon.icns"
